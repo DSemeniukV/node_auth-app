@@ -2,17 +2,35 @@ const User = require('../models/User');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const sendMail = require('../utils/sendMail');
+
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecretkey';
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'refreshsecretkey';
 const JWT_RESET_SECRET = process.env.JWT_RESET_SECRET || 'resetsecretkey';
 
+function isValidPassword(password) {
+  const minLength = 6;
+  const hasUppercase = /[A-Z]/.test(password);
+  const hasDigit = /\d/.test(password);
+  const hasSpecial = /[!@#$%^&*(),.?":{}|<>]/.test(password);
+
+  return (
+    typeof password === 'string' &&
+    password.length >= minLength &&
+    hasUppercase &&
+    hasDigit &&
+    hasSpecial
+  );
+}
+
 const register = async (req, res) => {
   const { name, email, password } = req.body;
 
-  if (password.length < 6) {
-    res
-      .status(400)
-      .json({ message: 'Password must be at least 6 characters long' });
+  if (!isValidPassword(password)) {
+    res.status(400).json({
+      message:
+        // eslint-disable-next-line max-len
+        'Password must be at least 6 characters long and include uppercase, digit and special symbol',
+    });
 
     return;
   }
@@ -55,20 +73,25 @@ const register = async (req, res) => {
 
 const activate = async (req, res) => {
   const { token } = req.params;
-  const decoded = jwt.verify(token, JWT_SECRET);
-  const user = await User.findByPk(decoded.id);
 
-  if (!user) {
-    res.status(400).json({ message: 'User not found' });
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await User.findByPk(decoded.id);
 
-    return;
+    if (!user || user.activationToken !== token) {
+      res.status(400).json({ message: 'Invalid activation token' });
+
+      return;
+    }
+
+    user.isActive = true;
+    user.activationToken = null;
+    await user.save();
+
+    res.status(200).json({ message: 'Account activated. You can now log in' });
+  } catch {
+    res.status(400).json({ message: 'Invalid or expired token' });
   }
-
-  user.isActive = true;
-  user.activationToken = null;
-  await user.save();
-
-  res.status(200).json({ message: 'Account activated. You can now log in' });
 };
 
 const login = async (req, res) => {
@@ -123,20 +146,24 @@ const refresh = async (req, res) => {
     return;
   }
 
-  const decoded = jwt.verify(refreshToken, JWT_REFRESH_SECRET);
-  const user = await User.findByPk(decoded.id);
+  try {
+    const decoded = jwt.verify(refreshToken, JWT_REFRESH_SECRET);
+    const user = await User.findByPk(decoded.id);
 
-  if (!user || refreshToken !== user.refreshToken) {
-    res.status(403).json({ message: 'Invalid refresh token' });
+    if (!user || refreshToken !== user.refreshToken) {
+      res.status(403).json({ message: 'Invalid refresh token' });
 
-    return;
+      return;
+    }
+
+    const newAccessToken = jwt.sign({ id: user.id }, JWT_SECRET, {
+      expiresIn: '15m',
+    });
+
+    res.json({ accessToken: newAccessToken });
+  } catch {
+    res.status(403).json({ message: 'Invalid or expired refresh token' });
   }
-
-  const newAccessToken = jwt.sign({ id: user.id }, JWT_SECRET, {
-    expiresIn: '15m',
-  });
-
-  res.json({ accessToken: newAccessToken });
 };
 
 const logout = async (req, res) => {
@@ -160,7 +187,7 @@ const logout = async (req, res) => {
     secure: false,
   });
 
-  return res.sendStatus(204);
+  res.sendStatus(204);
 };
 
 const forgotPassword = async (req, res) => {
@@ -193,23 +220,35 @@ const resetPassword = async (req, res) => {
   const { token, password, confirmPassword } = req.body;
 
   if (!token) {
-    return res.status(400).json({ message: 'Missing token' });
+    res.status(400).json({ message: 'Missing token' });
+
+    return;
   }
 
   if (password !== confirmPassword) {
-    return res.status(400).json({ message: 'Passwords do not match' });
+    res.status(400).json({ message: 'Passwords do not match' });
+
+    return;
+  }
+
+  if (!isValidPassword(password)) {
+    res.status(400).json({
+      message:
+        // eslint-disable-next-line max-len
+        'Password must be at least 6 characters long and include uppercase, digit and special symbol',
+    });
+
+    return;
   }
 
   try {
     const payload = jwt.verify(token, JWT_RESET_SECRET);
     const user = await User.findByPk(payload.id);
 
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
+    if (!user || token !== user.resetToken) {
+      res.status(401).json({ message: 'Invalid reset token' });
 
-    if (token !== user.resetToken) {
-      return res.status(401).json({ message: 'Invalid reset token' });
+      return;
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -219,7 +258,7 @@ const resetPassword = async (req, res) => {
     await user.save();
 
     res.json({ message: 'Password successfully reset' });
-  } catch (err) {
+  } catch {
     res.status(401).json({ message: 'Invalid or expired token' });
   }
 };
