@@ -33,15 +33,15 @@ const User = sequelize.define('User', {
   },
 
   activationToken: {
-    type: DataTypes.STRING,
+    type: DataTypes.TEXT,
   },
 
   resetToken: {
-    type: DataTypes.STRING,
+    type: DataTypes.TEXT,
   },
 
   refreshToken: {
-    type: DataTypes.STRING,
+    type: DataTypes.TEXT,
   },
 });
 
